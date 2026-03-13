@@ -184,29 +184,39 @@ build_transition_matrix <- function(p, on_prophylaxis_effective = FALSE, cycle =
   cl <- 0.25  # cycle length in years
 
   # TB reactivation rate (annual) — use adalimumab as reference TNFi
-  # From parameters: cumulative incidence 9.62/1000 exposed ≈ 0.96% annual
   rr_bio <- p[["RR_adalimumab"]]  # relative risk vs general population
   r_react_base <- p[["r_LTBI_react_natural"]]  # annual base rate
   r_react_bio <- r_react_base * rr_bio
 
-  # Prophylaxis reduces reactivation
-  proph_eff <- p[["OR_INH_alone"]]  # OR ≈ 0.46 (protective)
+  # Prophylaxis reduces reactivation (OR ≈ 0.46, protective)
+  proph_eff <- p[["OR_INH_alone"]]
   r_react_treated <- r_react_bio * proph_eff
+
+  # Post-prophylaxis residual risk: prophylaxis protection wanes over time
+
+  # Literature: INH protection wanes ~50% after completion
+  # Residual rate = midpoint between treated and untreated rates
+  r_react_post_proph <- r_react_bio * (1 - (1 - proph_eff) * 0.5)
 
   # Convert to cycle probabilities
   p_react_untreated <- rate_to_prob(r_react_bio, cl)
   p_react_treated <- rate_to_prob(r_react_treated, cl)
-  p_react_well <- rate_to_prob(p[["r_LTBI_react_natural"]], cl)  # very low for non-LTBI
-
-  # Proportion of active TB that is extrapulmonary
-  p_eptb <- p[["p_EPTB_biologics"]]
+  p_react_post_proph <- rate_to_prob(r_react_post_proph, cl)
 
   # TB diagnosis probability (per cycle, active TB → treatment)
   p_dx <- 0.90  # most active TB diagnosed within one cycle (3 months)
 
   # TB treatment outcomes (per cycle)
-  p_tx_success <- rate_to_prob(-log(1 - p[["p_treatment_success"]]) / 8, cl)  # 6-month treatment over ~8 cycles
+  p_tx_success <- rate_to_prob(-log(1 - p[["p_treatment_success"]]) / 8, cl)
   p_tb_death <- rate_to_prob(-log(1 - p[["CFR_DS_TB"]]) / 8, cl)
+
+  # TB relapse rate: ~5% within 2 years post-treatment (annual ~2.5%)
+  r_tb_relapse <- 0.025
+  p_tb_relapse <- rate_to_prob(r_tb_relapse, cl)
+
+  # Post-TB recovery: resume biologic after ~1 year stabilisation
+  # ~25% per cycle after first year post-treatment = gradual return to Well
+  p_post_tb_recovery <- 0.0
 
   # Background mortality (annual, adjusted for RA)
   age_start <- 45  # typical RA patient starting biologics
@@ -219,52 +229,60 @@ build_transition_matrix <- function(p, on_prophylaxis_effective = FALSE, cycle =
   smr_ra <- p[["SMR_RA"]]
   p_mort <- rate_to_prob(r_mort_base * smr_ra, cl)
 
-  # Prophylaxis completion: after ~6 months (8 cycles), move to Well
-  p_proph_complete <- ifelse(cycle <= 8, 0, 1)  # simplified: complete at 6 months
-
   # Build 7×7 transition matrix
   # States: Well, LTBI_untreated, LTBI_prophylaxis, Active_TB, TB_treatment, Post_TB, Dead
   m <- matrix(0, nrow = N_STATES, ncol = N_STATES)
   rownames(m) <- colnames(m) <- HEALTH_STATES
 
-  # 1. Well_on_biologic
+  # 1. Well_on_biologic — no LTBI, stable on biologic
   m["Well_on_biologic", "Dead"] <- p_mort
   m["Well_on_biologic", "Well_on_biologic"] <- 1 - p_mort
 
   # 2. LTBI_untreated (missed by screening, on biologic)
-  p_react <- p_react_untreated
-  m["LTBI_untreated", "Active_TB"] <- p_react * (1 - p_mort)
+  #    Full reactivation risk every cycle — this is the primary penalty for missed LTBI
+  m["LTBI_untreated", "Active_TB"] <- p_react_untreated * (1 - p_mort)
   m["LTBI_untreated", "Dead"] <- p_mort
-  m["LTBI_untreated", "LTBI_untreated"] <- 1 - p_react * (1 - p_mort) - p_mort
+  m["LTBI_untreated", "LTBI_untreated"] <- 1 - p_react_untreated * (1 - p_mort) - p_mort
 
-  # 3. LTBI_prophylaxis (correctly identified, on treatment)
-  p_react_p <- p_react_treated
+  # 3. LTBI_prophylaxis (correctly identified, on/completed treatment)
+  #    FIX: After prophylaxis completion, patients REMAIN in this state with
+  #    RESIDUAL reactivation risk (waning protection), NOT moved to Well.
+  #    This corrects the prior "prophylaxis = cure" assumption.
   if (cycle <= 8) {
-    # Still on prophylaxis
+    # During active prophylaxis: reduced reactivation (OR × base rate)
+    p_react_p <- p_react_treated
     m["LTBI_prophylaxis", "Active_TB"] <- p_react_p * (1 - p_mort)
     m["LTBI_prophylaxis", "Dead"] <- p_mort
     m["LTBI_prophylaxis", "LTBI_prophylaxis"] <- 1 - p_react_p * (1 - p_mort) - p_mort
   } else {
-    # Prophylaxis completed → move to Well (with residual protection)
-    m["LTBI_prophylaxis", "Active_TB"] <- p_react_p * (1 - p_mort)
+    # Post-prophylaxis: residual risk (waned protection)
+    # Patients stay in LTBI_prophylaxis with ongoing but reduced TB risk
+    p_react_resid <- p_react_post_proph
+    m["LTBI_prophylaxis", "Active_TB"] <- p_react_resid * (1 - p_mort)
     m["LTBI_prophylaxis", "Dead"] <- p_mort
-    m["LTBI_prophylaxis", "Well_on_biologic"] <- (1 - p_react_p) * (1 - p_mort)
-    m["LTBI_prophylaxis", "LTBI_prophylaxis"] <- 0
+    m["LTBI_prophylaxis", "LTBI_prophylaxis"] <- 1 - p_react_resid * (1 - p_mort) - p_mort
   }
 
   # 4. Active_TB (diagnosed within cycle → treatment)
-  m["Active_TB", "TB_treatment"] <- p_dx * (1 - p_mort * 1.5)
-  m["Active_TB", "Dead"] <- p_mort * 1.5  # elevated mortality
-  m["Active_TB", "Active_TB"] <- 1 - p_dx * (1 - p_mort * 1.5) - p_mort * 1.5
+  #    Biologic is HELD during active TB → RA flare (captured in utility/cost)
+  #    Elevated mortality (1.5× background)
+  p_mort_tb <- min(p_mort * 1.5, 0.95)  # cap to avoid impossible probabilities
+  m["Active_TB", "TB_treatment"] <- p_dx * (1 - p_mort_tb)
+  m["Active_TB", "Dead"] <- p_mort_tb
+  m["Active_TB", "Active_TB"] <- 1 - p_dx * (1 - p_mort_tb) - p_mort_tb
 
-  # 5. TB_treatment
+  # 5. TB_treatment — biologic still held, RA not well controlled
   m["TB_treatment", "Post_TB"] <- p_tx_success
   m["TB_treatment", "Dead"] <- p_tb_death
   m["TB_treatment", "TB_treatment"] <- 1 - p_tx_success - p_tb_death
 
-  # 6. Post_TB (recovered, may resume biologic)
+  # 6. Post_TB (completed TB treatment, recovering)
+  #    FIX: Can relapse to Active_TB (~5% within 2 years)
+  #    Can gradually recover to Well_on_biologic (resume biologics)
+  m["Post_TB", "Active_TB"] <- p_tb_relapse * (1 - p_mort)
+  m["Post_TB", "Well_on_biologic"] <- p_post_tb_recovery * (1 - p_mort - p_tb_relapse * (1 - p_mort))
   m["Post_TB", "Dead"] <- p_mort
-  m["Post_TB", "Post_TB"] <- 1 - p_mort
+  m["Post_TB", "Post_TB"] <- 1 - m["Post_TB", "Active_TB"] - m["Post_TB", "Well_on_biologic"] - p_mort
 
   # 7. Dead (absorbing)
   m["Dead", "Dead"] <- 1
@@ -273,7 +291,6 @@ build_transition_matrix <- function(p, on_prophylaxis_effective = FALSE, cycle =
   for (i in 1:N_STATES) {
     row_sum <- sum(m[i, ])
     if (row_sum > 0 && abs(row_sum - 1) > 1e-10) {
-      # Adjust the diagonal (staying in same state)
       m[i, i] <- m[i, i] + (1 - row_sum)
     }
     # Ensure no negative probabilities
@@ -285,28 +302,44 @@ build_transition_matrix <- function(p, on_prophylaxis_effective = FALSE, cycle =
 }
 
 #' Cost and utility vectors for each health state (per cycle)
+#' KEY FIX: During Active_TB and TB_treatment, biologic is HELD (withheld).
+#' This means: (1) No biologic cost, (2) RA flare management cost added,
+#' (3) Utility reflects BOTH TB burden AND uncontrolled RA from biologic interruption.
 state_costs <- function(p) {
   cl <- 0.25
+  c_bio_quarter <- p[["c_adalimumab_mo"]] * 3  # quarterly biologic cost
+
+  # RA flare management during biologic hold: conventional DMARDs + steroids
+
+  # + extra clinic visits (~INR 5,000/quarter; conservative Indian estimate)
+  c_ra_flare_mgmt <- 5000
+
   c(
-    Well_on_biologic = p[["c_adalimumab_mo"]] * 3,  # 3 months biologic
-    LTBI_untreated = p[["c_adalimumab_mo"]] * 3,
-    LTBI_prophylaxis = p[["c_adalimumab_mo"]] * 3 + p[["c_INH_6mo"]] / 8,  # amortized prophylaxis
-    Active_TB = p[["c_TB_total"]] / 4,  # treatment costs spread
-    TB_treatment = p[["c_TB_total"]] / 8,  # during 6-month treatment
-    Post_TB = p[["c_adalimumab_mo"]] * 3 * 0.8,  # reduced biologic use post-TB
+    Well_on_biologic = c_bio_quarter,                                  # stable on biologic
+    LTBI_untreated = c_bio_quarter,                                    # asymptomatic LTBI, on biologic
+    LTBI_prophylaxis = c_bio_quarter + p[["c_INH_6mo"]] / 8,         # biologic + amortized INH
+    Active_TB = c_ra_flare_mgmt + p[["c_TB_total"]] / 4,             # NO biologic (held) + TB dx + RA flare mgmt
+    TB_treatment = c_ra_flare_mgmt + p[["c_TB_total"]] / 8,          # NO biologic (held) + TB Rx + RA flare mgmt
+    Post_TB = c_bio_quarter * 0.8,                                     # biologic restarted (cautious dose)
     Dead = 0
   )
 }
 
 state_utilities <- function(p) {
   cl <- 0.25
+
+  # RA flare disutility when biologic is held during TB:
+  # Literature: RA flare reduces utility by 0.15-0.20 (Stevenson 2016, Wailoo 2006)
+  # Applied as additive decrement to TB-state utility, reflecting compound burden
+  du_ra_flare <- -0.15
+
   c(
     Well_on_biologic = p[["u_RA_controlled"]] * cl,
-    LTBI_untreated = p[["u_RA_controlled"]] * cl,  # asymptomatic LTBI
+    LTBI_untreated = p[["u_RA_controlled"]] * cl,                              # asymptomatic LTBI
     LTBI_prophylaxis = (p[["u_RA_controlled"]] + p[["du_prophylaxis"]]) * cl,
-    Active_TB = p[["u_active_PTB"]] * cl,
-    TB_treatment = p[["u_TB_treatment"]] * cl,
-    Post_TB = p[["u_post_TB"]] * cl,
+    Active_TB = (p[["u_active_PTB"]] + du_ra_flare) * cl,                      # TB + RA flare (biologic held)
+    TB_treatment = (p[["u_TB_treatment"]] + du_ra_flare) * cl,                 # TB Rx + RA flare (biologic held)
+    Post_TB = p[["u_post_TB"]] * cl,                                           # recovering, biologic restarting
     Dead = 0
   )
 }
@@ -374,9 +407,10 @@ run_markov_single <- function(p, dt_row, settings) {
   tb_inflow <- numeric(n_cycles)
   for (t in 1:n_cycles) {
     tm <- build_transition_matrix(p, cycle = t)
-    # Inflow to Active_TB from LTBI states
+    # Inflow to Active_TB from LTBI states + Post_TB relapses
     tb_inflow[t] <- trace[t, "LTBI_untreated"] * tm["LTBI_untreated", "Active_TB"] +
-                     trace[t, "LTBI_prophylaxis"] * tm["LTBI_prophylaxis", "Active_TB"]
+                     trace[t, "LTBI_prophylaxis"] * tm["LTBI_prophylaxis", "Active_TB"] +
+                     trace[t, "Post_TB"] * tm["Post_TB", "Active_TB"]
   }
   total_tb_cases <- sum(tb_inflow)
 

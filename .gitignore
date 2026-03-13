@@ -18,5 +18,7 @@ Dockerfile
 
 # Validation/dev files
 validation_report.txt
+validation_report_v2.txt
+validate_model_v2.py
 install_packages.R
 tests/
