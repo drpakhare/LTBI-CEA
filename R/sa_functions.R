@@ -84,15 +84,20 @@ tornado_data <- function(owsa_results, ref_strategy = "TreatAll",
 #' @param settings MODEL_SETTINGS
 #' @param n_steps Grid resolution per axis
 run_twsa <- function(base_params, param1, param2, ref_strategy = "TreatAll",
-                     wtp = 234859, settings = MODEL_SETTINGS, n_steps = 7) {
+                     outcome = "expected_tb_5y", settings = MODEL_SETTINGS, n_steps = 7) {
   p_base <- sapply(base_params, function(x) x$value, USE.NAMES = TRUE)
+
+  # Column name mapping: outcome selector -> summary column name
+  col_map <- c(expected_tb_5y = "expected_tb_5y", cost = "cost_per_person",
+               ltbi_missed = "ltbi_missed", cost_per_tb_averted = "cost_per_tb_averted")
+  col_name <- if (outcome %in% names(col_map)) col_map[[outcome]] else outcome
 
   vals1 <- seq(base_params[[param1]]$low, base_params[[param1]]$high, length.out = n_steps)
   vals2 <- seq(base_params[[param2]]$low, base_params[[param2]]$high, length.out = n_steps)
 
   grid <- expand.grid(v1 = vals1, v2 = vals2)
   grid$optimal <- NA_character_
-  grid$ref_tb <- NA_real_
+  grid$ref_value <- NA_real_
 
   for (i in 1:nrow(grid)) {
     p_mod <- p_base
@@ -101,16 +106,19 @@ run_twsa <- function(base_params, param1, param2, ref_strategy = "TreatAll",
 
     tryCatch({
       model_out <- run_dt_only_model(p_mod, settings)
-      # Optimal = strategy with lowest expected TB at 5y
-      best_idx <- which.min(model_out$summary$expected_tb_5y)
-      grid$optimal[i] <- model_out$summary$strategy_name[best_idx]
-      grid$ref_tb[i] <- model_out$summary$expected_tb_5y[
-        model_out$summary$strategy == ref_strategy]
+      sm <- model_out$summary
+      # Optimal = strategy with best (lowest) value on selected outcome
+      best_idx <- which.min(sm[[col_name]])
+      grid$optimal[i] <- sm$strategy_name[best_idx]
+      # Value for the selected reference strategy
+      ref_idx <- which(sm$strategy == ref_strategy)
+      if (length(ref_idx) > 0) grid$ref_value[i] <- sm[[col_name]][ref_idx]
     }, error = function(e) {})
   }
 
   grid$param1_name <- param1
   grid$param2_name <- param2
+  grid$outcome <- outcome
   grid
 }
 
@@ -118,51 +126,91 @@ run_twsa <- function(base_params, param1, param2, ref_strategy = "TreatAll",
 #' @param base_params Full parameter list
 #' @param param_name Parameter to vary
 #' @param settings MODEL_SETTINGS
-find_threshold <- function(base_params, param_name, wtp = 234859,
-                           settings = MODEL_SETTINGS, tol = 0.001) {
+find_threshold <- function(base_params, param_name, outcome = "expected_tb_5y",
+                           settings = MODEL_SETTINGS, n_points = 30) {
   p_base <- sapply(base_params, function(x) x$value, USE.NAMES = TRUE)
   low <- base_params[[param_name]]$low
   high <- base_params[[param_name]]$high
+  base_val <- base_params[[param_name]]$value
 
-  # Optimal = lowest expected TB at 5 years
-  get_optimal <- function(val) {
+  # Column name mapping
+  col_map <- c(expected_tb_5y = "expected_tb_5y", cost = "cost_per_person",
+               ltbi_missed = "ltbi_missed", cost_per_tb_averted = "cost_per_tb_averted")
+  col_name <- if (outcome %in% names(col_map)) col_map[[outcome]] else outcome
+
+  outcome_labels <- c(expected_tb_5y = "Expected TB/1000 (5y)", cost = "Cost/Person (INR)",
+                      ltbi_missed = "LTBI Missed/1000", cost_per_tb_averted = "Cost/TB Averted")
+  outcome_label <- if (outcome %in% names(outcome_labels)) outcome_labels[[outcome]] else outcome
+
+  # Sweep parameter across range and record outcome for all strategies
+  vals <- seq(low, high, length.out = n_points)
+  sweep_results <- list()
+
+  for (v in vals) {
     p_mod <- p_base
-    p_mod[[param_name]] <- val
-    model_out <- run_dt_only_model(p_mod, settings)
-    best_idx <- which.min(model_out$summary$expected_tb_5y)
-    model_out$summary$strategy[best_idx]
+    p_mod[[param_name]] <- v
+    tryCatch({
+      model_out <- run_dt_only_model(p_mod, settings)
+      sm <- model_out$summary
+      for (j in 1:nrow(sm)) {
+        sweep_results[[length(sweep_results) + 1]] <- tibble::tibble(
+          param_value = v,
+          strategy = sm$strategy[j],
+          strategy_name = sm$strategy_name[j],
+          outcome_value = sm[[col_name]][j]
+        )
+      }
+    }, error = function(e) {})
   }
 
-  opt_low <- get_optimal(low)
-  opt_high <- get_optimal(high)
+  sweep_df <- bind_rows(sweep_results)
 
-  if (opt_low == opt_high) {
-    return(list(
-      threshold = NA,
-      message = paste0("No threshold found: ", opt_low, " has lowest TB burden ",
-                       "across entire range [", round(low, 4), ", ", round(high, 4), "]")
-    ))
-  }
+  # Find thresholds: where the optimal (lowest) strategy changes
+  thresholds <- list()
+  if (nrow(sweep_df) > 0) {
+    optimal_per_val <- sweep_df %>%
+      group_by(param_value) %>%
+      slice_min(outcome_value, n = 1, with_ties = FALSE) %>%
+      ungroup() %>%
+      arrange(param_value)
 
-  # Binary search
-  for (iter in 1:50) {
-    mid <- (low + high) / 2
-    opt_mid <- get_optimal(mid)
-    if (opt_mid == opt_low) {
-      low <- mid
-    } else {
-      high <- mid
+    # Detect switch points
+    for (i in 2:nrow(optimal_per_val)) {
+      if (optimal_per_val$strategy[i] != optimal_per_val$strategy[i-1]) {
+        thresholds[[length(thresholds) + 1]] <- list(
+          value = (optimal_per_val$param_value[i] + optimal_per_val$param_value[i-1]) / 2,
+          from = optimal_per_val$strategy_name[i-1],
+          to = optimal_per_val$strategy_name[i]
+        )
+      }
     }
-    if (high - low < tol) break
+  }
+
+  # Build message
+  if (length(thresholds) == 0) {
+    best_at_base <- sweep_df %>%
+      filter(abs(param_value - base_val) == min(abs(param_value - base_val))) %>%
+      slice_min(outcome_value, n = 1, with_ties = FALSE)
+    msg <- paste0("No threshold found for ", param_name, ": ",
+                  best_at_base$strategy_name[1], " has the lowest ",
+                  outcome_label, " across the entire range [",
+                  round(low, 4), " \u2013 ", round(high, 4), "]")
+  } else {
+    msg_parts <- sapply(thresholds, function(th) {
+      paste0("At ", param_name, " \u2248 ", round(th$value, 4),
+             ": best strategy switches from ", th$from, " to ", th$to)
+    })
+    msg <- paste(msg_parts, collapse = "\n")
   }
 
   list(
-    threshold = (low + high) / 2,
-    strategy_below = opt_low,
-    strategy_above = get_optimal(high),
-    message = paste0("At ", param_name, " = ", round((low + high) / 2, 4),
-                     ", optimal strategy (lowest TB) switches from ",
-                     opt_low, " to ", get_optimal(high))
+    sweep = sweep_df,
+    thresholds = thresholds,
+    param_name = param_name,
+    base_value = base_val,
+    outcome = outcome,
+    outcome_label = outcome_label,
+    message = msg
   )
 }
 
