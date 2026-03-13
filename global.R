@@ -35,8 +35,8 @@ source("R/mod_parameters.R")
 source("R/mod_decision_tree.R")
 source("R/mod_dt_cea.R")
 source("R/mod_mcda.R")
-source("R/mod_markov.R")
-source("R/mod_cea.R")
+# source("R/mod_markov.R")   # Markov kept on disk but not loaded
+# source("R/mod_cea.R")      # ICER/NMB kept on disk but not loaded
 source("R/mod_dsa.R")
 source("R/mod_psa.R")
 source("R/report_functions.R")

@@ -1,4 +1,4 @@
-# mod_psa.R — Module 7: Probabilistic Sensitivity Analysis
+# mod_psa.R — Module: Probabilistic Sensitivity Analysis (DT-Based)
 
 mod_psa_ui <- function(id) {
   ns <- NS(id)
@@ -15,17 +15,14 @@ mod_psa_ui <- function(id) {
             numericInput(ns("psa_seed"), "Random Seed", value = 42,
                         min = 1, max = 99999)
           ),
-          layout_columns(
-            col_widths = c(6, 6),
-            numericInput(ns("psa_wtp"), "WTP (INR/QALY)", value = 234859,
-                        min = 0, max = 2000000, step = 50000),
-            actionButton(ns("btn_run_psa"), "Run PSA",
-                        class = "btn-danger btn-lg mt-3", width = "100%",
-                        icon = icon("play"))
-          )
+          actionButton(ns("btn_run_psa"), "Run PSA",
+                      class = "btn-danger btn-lg mt-3", width = "100%",
+                      icon = icon("play"))
         )
       )
     ),
+
+    # PSA Summary Table
     layout_columns(
       col_widths = c(12),
       card(
@@ -33,31 +30,39 @@ mod_psa_ui <- function(id) {
         card_body(DT::dataTableOutput(ns("psa_summary_table")))
       )
     ),
+
+    # Cost vs Expected TB Scatter
     layout_columns(
       col_widths = c(12),
       card(
-        card_header("Cost-Effectiveness Scatter Plot"),
-        card_body(plotlyOutput(ns("plot_ce_scatter"), height = "550px"))
+        card_header("Cost vs Expected TB Burden (PSA Scatter)"),
+        card_body(plotlyOutput(ns("plot_cost_tb_scatter"), height = "550px"))
       )
     ),
+
+    # Probability of Lowest TB / Cheapest
+    layout_columns(
+      col_widths = c(6, 6),
+      card(
+        card_header("Probability of Lowest TB Burden"),
+        card_body(plotlyOutput(ns("plot_prob_lowest_tb"), height = "400px"))
+      ),
+      card(
+        card_header("Probability of Lowest Cost"),
+        card_body(plotlyOutput(ns("plot_prob_cheapest"), height = "400px"))
+      )
+    ),
+
+    # TB Distribution Density
     layout_columns(
       col_widths = c(12),
       card(
-        card_header("Cost-Effectiveness Acceptability Curve (CEAC)"),
-        card_body(plotlyOutput(ns("plot_ceac"), height = "550px"))
+        card_header("Expected TB (5y) Distribution by Strategy"),
+        card_body(plotlyOutput(ns("plot_tb_density"), height = "500px"))
       )
     ),
-    layout_columns(
-      col_widths = c(12),
-      card(
-        card_header("Expected Value of Perfect Information (EVPI)"),
-        card_body(
-          plotlyOutput(ns("plot_evpi"), height = "550px"),
-          br(),
-          uiOutput(ns("evpi_text"))
-        )
-      )
-    ),
+
+    # Interpretation
     layout_columns(
       col_widths = c(12),
       card(
@@ -65,22 +70,21 @@ mod_psa_ui <- function(id) {
         card_body(uiOutput(ns("psa_interpretation")))
       )
     ),
+
+    # Downloads
     layout_columns(
       col_widths = c(12),
       card(
         card_body(
           layout_columns(
-            col_widths = c(3, 3, 3, 3),
+            col_widths = c(4, 4, 4),
             downloadButton(ns("dl_psa_xlsx"), "PSA Data (.xlsx)",
                           class = "btn-outline-danger btn-sm w-100",
                           icon = icon("download")),
             downloadButton(ns("dl_scatter_png"), "Scatter (.png)",
                           class = "btn-outline-danger btn-sm w-100",
                           icon = icon("download")),
-            downloadButton(ns("dl_ceac_png"), "CEAC (.png)",
-                          class = "btn-outline-danger btn-sm w-100",
-                          icon = icon("download")),
-            downloadButton(ns("dl_evpi_png"), "EVPI (.png)",
+            downloadButton(ns("dl_density_png"), "TB Density (.png)",
                           class = "btn-outline-danger btn-sm w-100",
                           icon = icon("download"))
           )
@@ -110,131 +114,184 @@ mod_psa_server <- function(id, params_rv, settings, psa_results_shared = NULL) {
       res
     })
 
+    # PSA Summary Table
     output$psa_summary_table <- DT::renderDataTable({
       psa <- psa_results()
       if (is.null(psa)) return(datatable(data.frame()))
 
-      summ <- psa_summary(psa, input$psa_wtp)
+      summ <- psa_summary(psa)
 
       display <- summ %>%
         transmute(
           Strategy = strategy_name,
-          `Mean Cost` = fmt_inr(mean_cost),
+          `Mean Cost/Person` = fmt_inr(mean_cost),
           `95% CI Cost` = paste0("[", fmt_inr(ci_cost_low), ", ", fmt_inr(ci_cost_high), "]"),
-          `Mean QALY` = round(mean_qaly, 4),
-          `95% CI QALY` = paste0("[", round(ci_qaly_low, 4), ", ", round(ci_qaly_high, 4), "]"),
-          `Mean NMB` = fmt_inr(mean_nmb),
-          `P(CE)` = fmt_pct(prob_ce)
+          `Mean TB (5y)/1000` = round(mean_tb_5y, 2),
+          `95% CI TB` = paste0("[", round(ci_tb_low, 2), ", ", round(ci_tb_high, 2), "]"),
+          `Mean TB Averted/1000` = round(mean_tb_averted, 2),
+          `Mean LTBI Missed/1000` = round(mean_ltbi_missed, 1),
+          `P(Lowest TB)` = fmt_pct(prob_lowest_tb),
+          `P(Cheapest)` = fmt_pct(prob_cheapest)
         )
 
       datatable(display, options = list(dom = "t", pageLength = 5), rownames = FALSE) %>%
-        formatStyle("P(CE)", fontWeight = "bold",
+        formatStyle("P(Lowest TB)", fontWeight = "bold",
           backgroundColor = styleInterval(c(0.5), c("white", "#E0FFE0")))
     })
 
-    output$plot_ce_scatter <- renderPlotly({
+    # Cost vs Expected TB Scatter
+    output$plot_cost_tb_scatter <- renderPlotly({
       psa <- psa_results()
       if (is.null(psa)) return(plotly_empty())
 
       si <- strategy_info()
       n_strat <- ncol(psa$costs)
 
-      # Reference = first strategy (TST)
-      ref_cost <- psa$costs[, 1]
-      ref_qaly <- psa$qalys[, 1]
-
       scatter_data <- list()
-      for (j in 2:n_strat) {
-        scatter_data[[j-1]] <- tibble::tibble(
-          inc_cost = psa$costs[, j] - ref_cost,
-          inc_qaly = psa$qalys[, j] - ref_qaly,
+      for (j in 1:n_strat) {
+        df_j <- tibble::tibble(
+          cost = psa$costs[, j],
+          tb_5y = psa$tb_5y[, j],
           strategy = psa$strategy_names[j]
         )
+        # Subsample for performance
+        if (nrow(df_j) > 1000) {
+          df_j <- df_j %>% sample_n(1000)
+        }
+        scatter_data[[j]] <- df_j
       }
       scatter_df <- bind_rows(scatter_data)
 
-      # Subsample for performance
-      if (nrow(scatter_df) > 5000) {
-        scatter_df <- scatter_df %>% sample_n(5000)
-      }
-
-      wtp <- input$psa_wtp
-
-      p <- ggplot(scatter_df, aes(x = inc_qaly, y = inc_cost, color = strategy)) +
+      p <- ggplot(scatter_df, aes(x = tb_5y, y = cost, color = strategy)) +
         geom_point(alpha = 0.15, size = 1) +
         stat_ellipse(level = 0.95, linewidth = 1) +
-        geom_abline(slope = wtp, intercept = 0, linetype = "dashed", color = "gray40") +
-        geom_hline(yintercept = 0, color = "gray80") +
-        geom_vline(xintercept = 0, color = "gray80") +
-        scale_color_manual(values = setNames(si$color[2:n_strat], psa$strategy_names[2:n_strat])) +
+        scale_color_manual(values = setNames(si$color, si$name)) +
         scale_y_continuous(labels = function(x) paste0("\u20B9", scales::comma(x))) +
-        labs(x = paste0("Incremental QALYs (vs ", psa$strategy_names[1], ")"),
-             y = "Incremental Cost (INR)", color = "Strategy") +
+        labs(x = "Expected TB Cases per 1000 (5-Year)",
+             y = "Screening Cost per Person (INR)",
+             color = "Strategy",
+             title = "Cost vs TB Burden Under Parameter Uncertainty") +
         theme_minimal(base_size = 12)
 
       ggplotly(p, tooltip = c("x", "y", "color"))
     })
 
-    output$plot_ceac <- renderPlotly({
+    # Probability of Lowest TB
+    output$plot_prob_lowest_tb <- renderPlotly({
       psa <- psa_results()
       if (is.null(psa)) return(plotly_empty())
 
       si <- strategy_info()
-      ceac <- calculate_ceac(psa, wtp_range = seq(0, 1000000, by = 10000))
+      summ <- psa_summary(psa)
 
-      p <- ggplot(ceac, aes(x = wtp, y = prob_ce, color = strategy_name)) +
-        geom_line(linewidth = 1) +
-        geom_vline(xintercept = 234859, linetype = "dashed", color = "gray50") +
-        annotate("text", x = 250000, y = 0.05, label = "1\u00D7 GDP p.c.",
-                 color = "gray50", size = 3, hjust = 0) +
-        geom_vline(xintercept = 704577, linetype = "dotted", color = "gray60") +
-        annotate("text", x = 720000, y = 0.05, label = "3\u00D7 GDP p.c.",
-                 color = "gray60", size = 3, hjust = 0) +
-        scale_color_manual(values = setNames(si$color, si$name)) +
-        scale_x_continuous(labels = function(x) paste0("\u20B9", scales::comma(x / 1000), "k")) +
+      p <- ggplot(summ, aes(x = reorder(strategy_name, -prob_lowest_tb),
+                            y = prob_lowest_tb, fill = strategy_name)) +
+        geom_col(alpha = 0.85) +
+        scale_fill_manual(values = setNames(si$color, si$name)) +
         scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
-        labs(x = "Willingness-to-Pay (INR/QALY)",
-             y = "Probability of Being Cost-Effective",
-             color = "Strategy") +
+        labs(x = NULL, y = "Probability", title = "P(Lowest 5y TB Burden)") +
+        theme_minimal(base_size = 11) +
+        theme(legend.position = "none",
+              axis.text.x = element_text(angle = 30, hjust = 1))
+
+      ggplotly(p, tooltip = c("y"))
+    })
+
+    # Probability of Cheapest
+    output$plot_prob_cheapest <- renderPlotly({
+      psa <- psa_results()
+      if (is.null(psa)) return(plotly_empty())
+
+      si <- strategy_info()
+      summ <- psa_summary(psa)
+
+      p <- ggplot(summ, aes(x = reorder(strategy_name, -prob_cheapest),
+                            y = prob_cheapest, fill = strategy_name)) +
+        geom_col(alpha = 0.85) +
+        scale_fill_manual(values = setNames(si$color, si$name)) +
+        scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+        labs(x = NULL, y = "Probability", title = "P(Lowest Cost)") +
+        theme_minimal(base_size = 11) +
+        theme(legend.position = "none",
+              axis.text.x = element_text(angle = 30, hjust = 1))
+
+      ggplotly(p, tooltip = c("y"))
+    })
+
+    # TB Distribution Density
+    output$plot_tb_density <- renderPlotly({
+      psa <- psa_results()
+      if (is.null(psa)) return(plotly_empty())
+
+      si <- strategy_info()
+      n_strat <- ncol(psa$tb_5y)
+
+      density_data <- list()
+      for (j in 1:n_strat) {
+        density_data[[j]] <- tibble::tibble(
+          tb_5y = psa$tb_5y[, j],
+          strategy = psa$strategy_names[j]
+        )
+      }
+      density_df <- bind_rows(density_data)
+
+      p <- ggplot(density_df, aes(x = tb_5y, fill = strategy, color = strategy)) +
+        geom_density(alpha = 0.3, linewidth = 0.8) +
+        scale_fill_manual(values = setNames(si$color, si$name)) +
+        scale_color_manual(values = setNames(si$color, si$name)) +
+        labs(x = "Expected TB Cases per 1000 (5-Year)",
+             y = "Density",
+             fill = "Strategy", color = "Strategy",
+             title = "Distribution of Expected TB Burden Across Simulations") +
         theme_minimal(base_size = 12)
 
       ggplotly(p) %>% layout(legend = list(orientation = "h", y = -0.15))
     })
 
-    output$plot_evpi <- renderPlotly({
+    # Interpretation
+    output$psa_interpretation <- renderUI({
       psa <- psa_results()
-      if (is.null(psa)) return(plotly_empty())
+      if (is.null(psa)) return(tags$p("Run PSA to see interpretation."))
 
-      wtp_range <- seq(0, 1000000, by = 20000)
-      evpi_vals <- sapply(wtp_range, function(w) calculate_evpi(psa, w))
+      summ <- psa_summary(psa)
+      best_tb <- summ %>% slice_max(prob_lowest_tb, n = 1)
+      best_cost <- summ %>% slice_max(prob_cheapest, n = 1)
 
-      evpi_df <- tibble::tibble(wtp = wtp_range, evpi = evpi_vals)
-
-      p <- ggplot(evpi_df, aes(x = wtp, y = evpi)) +
-        geom_line(color = "#FF4444", linewidth = 1.2) +
-        geom_area(fill = "#FF4444", alpha = 0.1) +
-        geom_vline(xintercept = 234859, linetype = "dashed", color = "gray50") +
-        scale_x_continuous(labels = function(x) paste0("\u20B9", scales::comma(x / 1000), "k")) +
-        scale_y_continuous(labels = function(x) paste0("\u20B9", scales::comma(x))) +
-        labs(x = "WTP (INR/QALY)", y = "EVPI (INR/Person)") +
-        theme_minimal(base_size = 12)
-
-      ggplotly(p)
-    })
-
-    output$evpi_text <- renderUI({
-      psa <- psa_results()
-      if (is.null(psa)) return(NULL)
-
-      evpi <- calculate_evpi(psa, input$psa_wtp)
       tagList(
-        tags$p(
-          "At WTP = ", fmt_inr(input$psa_wtp), "/QALY, the ",
-          tags$strong("EVPI = ", fmt_inr(evpi), " per person"), "."
+        tags$h5("PSA Results Summary"),
+        tags$p(paste0("Based on ", psa$n_valid, " valid simulations (of ",
+                     psa$n_total, " attempted):")),
+        tags$ul(
+          tags$li(HTML(paste0(
+            tags$strong(best_tb$strategy_name[1]),
+            " has the highest probability of achieving the lowest 5-year TB burden (",
+            fmt_pct(best_tb$prob_lowest_tb[1]), ")."))),
+          tags$li(HTML(paste0(
+            tags$strong(best_cost$strategy_name[1]),
+            " has the highest probability of being the cheapest strategy (",
+            fmt_pct(best_cost$prob_cheapest[1]), ")."))),
+          tags$li(paste0("Mean screening costs range from ",
+                        fmt_inr(min(summ$mean_cost)), " to ",
+                        fmt_inr(max(summ$mean_cost)), " per person.")),
+          tags$li(paste0("Mean expected TB (5y) ranges from ",
+                        round(min(summ$mean_tb_5y), 2), " to ",
+                        round(max(summ$mean_tb_5y), 2), " per 1000 patients."))
         ),
-        tags$p(class = "text-muted small",
-          "EVPI represents the maximum value of eliminating all parameter uncertainty.
-           A high EVPI suggests further research to reduce uncertainty would be worthwhile.")
+        tags$h6("How to Interpret:"),
+        tags$ul(
+          tags$li(tags$strong("Cost vs TB Scatter: "),
+                 "Each dot = one simulation. Strategies in the bottom-left corner ",
+                 "(low cost, low TB) are preferred. The 95% ellipse captures uncertainty."),
+          tags$li(tags$strong("P(Lowest TB): "),
+                 "Probability each strategy yields the fewest TB cases across simulations. ",
+                 "Higher = more robust TB prevention under uncertainty."),
+          tags$li(tags$strong("P(Cheapest): "),
+                 "Probability each strategy is least costly. Trade-off with TB prevention ",
+                 "informs the final recommendation."),
+          tags$li(tags$strong("TB Density: "),
+                 "Narrower distributions indicate less sensitivity to parameter uncertainty. ",
+                 "Strategies with distributions shifted left have lower TB burden.")
+        )
       )
     })
 
@@ -247,91 +304,29 @@ mod_psa_server <- function(id, params_rv, settings, psa_results_shared = NULL) {
           showNotification("Run PSA first.", type = "warning")
           return()
         }
-        tmp <- generate_psa_excel(psa, input$psa_wtp)
+        tmp <- generate_psa_excel(psa)
         file.copy(tmp, file)
       }
     )
 
     output$dl_scatter_png <- downloadHandler(
-      filename = function() "PSA_CE_Scatter.png",
+      filename = function() "PSA_Cost_TB_Scatter.png",
       content = function(file) {
         psa <- psa_results()
         if (is.null(psa)) return()
-        p <- build_psa_scatter_plot(psa, input$psa_wtp)
+        p <- build_psa_scatter_plot(psa)
         if (!is.null(p)) ggsave(file, plot = p, width = 10, height = 7, dpi = 200)
       }
     )
 
-    output$dl_ceac_png <- downloadHandler(
-      filename = function() "CEAC.png",
+    output$dl_density_png <- downloadHandler(
+      filename = function() "PSA_TB_Density.png",
       content = function(file) {
         psa <- psa_results()
         if (is.null(psa)) return()
-        p <- build_ceac_plot(psa)
+        p <- build_psa_tb_density_plot(psa)
         if (!is.null(p)) ggsave(file, plot = p, width = 10, height = 7, dpi = 200)
       }
     )
-
-    output$dl_evpi_png <- downloadHandler(
-      filename = function() "EVPI.png",
-      content = function(file) {
-        psa <- psa_results()
-        if (is.null(psa)) return()
-
-        wtp_range <- seq(0, 1000000, by = 20000)
-        evpi_vals <- sapply(wtp_range, function(w) calculate_evpi(psa, w))
-        evpi_df <- tibble::tibble(wtp = wtp_range, evpi = evpi_vals)
-
-        p <- ggplot(evpi_df, aes(x = wtp, y = evpi)) +
-          geom_line(color = "#FF4444", linewidth = 1.2) +
-          geom_area(fill = "#FF4444", alpha = 0.1) +
-          geom_vline(xintercept = 234859, linetype = "dashed", color = "gray50") +
-          scale_x_continuous(labels = function(x) paste0("\u20B9", scales::comma(x / 1000), "k")) +
-          scale_y_continuous(labels = function(x) paste0("\u20B9", scales::comma(x))) +
-          labs(x = "WTP (INR/QALY)", y = "EVPI (INR/Person)",
-               title = "Expected Value of Perfect Information") +
-          theme_minimal(base_size = 12)
-        ggsave(file, plot = p, width = 10, height = 7, dpi = 200)
-      }
-    )
-
-    output$psa_interpretation <- renderUI({
-      psa <- psa_results()
-      if (is.null(psa)) return(tags$p("Run PSA to see interpretation."))
-
-      summ <- psa_summary(psa, input$psa_wtp)
-      best <- summ %>% slice_max(prob_ce, n = 1)
-
-      tagList(
-        tags$h5("PSA Results Summary"),
-        tags$p(paste0("Based on ", psa$n_valid, " valid simulations (of ",
-                     psa$n_total, " attempted):")),
-        tags$ul(
-          tags$li(paste0("At WTP = ", fmt_inr(input$psa_wtp), "/QALY, ",
-                        tags$strong(best$strategy_name[1]),
-                        " has the highest probability of being cost-effective (",
-                        fmt_pct(best$prob_ce[1]), ").")),
-          tags$li(paste0("Mean costs range from ",
-                        fmt_inr(min(summ$mean_cost)), " to ",
-                        fmt_inr(max(summ$mean_cost)), " per person.")),
-          tags$li(paste0("Mean QALYs range from ",
-                        round(min(summ$mean_qaly), 3), " to ",
-                        round(max(summ$mean_qaly), 3), " per person."))
-        ),
-        tags$h6("How to Interpret:"),
-        tags$ul(
-          tags$li(tags$strong("CE Scatter Plot: "),
-                 "Each dot represents one simulation. Points below the WTP line
-                  are cost-effective. The 95% ellipse shows parameter uncertainty."),
-          tags$li(tags$strong("CEAC: "),
-                 "Shows the probability each strategy is optimal across different
-                  WTP thresholds. The strategy with the highest probability at your
-                  chosen WTP is the recommended choice under uncertainty."),
-          tags$li(tags$strong("EVPI: "),
-                 "If EVPI is high, it means more research to reduce parameter
-                  uncertainty could change the decision and would be valuable.")
-        )
-      )
-    })
   })
 }

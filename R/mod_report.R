@@ -1,4 +1,4 @@
-# mod_report.R — Module 8: Download Reports & Exports
+# mod_report.R — Module: Download Reports & Exports (DT-Based)
 # LTBI Screening CEA Shiny Application
 
 mod_report_ui <- function(id) {
@@ -29,20 +29,14 @@ mod_report_ui <- function(id) {
         card_body(
           tags$p(
             "Comprehensive cost-effectiveness analysis report including: executive summary, ",
-            "strategy comparison, decision tree outcomes, Markov model results, ICER table, ",
-            "NMB analysis, interpretation, model assumptions, and embedded figures."
+            "strategy comparison, decision tree outcomes, short-term CEA results, ",
+            "interpretation, model assumptions, and embedded figures."
           ),
           layout_columns(
             col_widths = c(6, 6),
-            numericInput(ns("report_wtp"), "WTP Threshold (INR/QALY)",
-                        value = 234859, min = 0, max = 2000000, step = 50000),
-            checkboxInput(ns("include_plots"), "Include Embedded Plots", value = TRUE)
-          ),
-          layout_columns(
-            col_widths = c(6, 6),
+            checkboxInput(ns("include_plots"), "Include Embedded Plots", value = TRUE),
             checkboxInput(ns("include_psa_in_report"), "Include PSA Results (if available)",
-                         value = TRUE),
-            div()
+                         value = TRUE)
           ),
           downloadButton(ns("dl_full_report"), "Download Full Report (.docx)",
                         class = "btn-success btn-lg", icon = icon("download"))
@@ -67,35 +61,6 @@ mod_report_ui <- function(id) {
       )
     ),
 
-    # ── Individual Plots ──
-    layout_columns(
-      col_widths = c(12),
-      card(
-        card_header(icon("chart-line"), " Individual Plots (PNG)"),
-        card_body(
-          tags$p("Download high-resolution plots from the analysis."),
-          layout_columns(
-            col_widths = c(4, 4, 4),
-            downloadButton(ns("dl_ceplane_png"), "CE Plane",
-                          class = "btn-outline-primary btn-sm w-100"),
-            downloadButton(ns("dl_nmb_png"), "NMB Chart",
-                          class = "btn-outline-primary btn-sm w-100"),
-            downloadButton(ns("dl_markov_png"), "Markov Trace",
-                          class = "btn-outline-primary btn-sm w-100")
-          ),
-          br(),
-          layout_columns(
-            col_widths = c(6, 6),
-            selectInput(ns("markov_strategy"), "Markov Trace Strategy",
-              choices = setNames(MODEL_SETTINGS$strategies, MODEL_SETTINGS$strategy_names),
-              selected = "Sequential"),
-            numericInput(ns("plot_wtp"), "WTP for CE Plane (INR/QALY)",
-                        value = 234859, min = 0, max = 2000000, step = 50000)
-          )
-        )
-      )
-    ),
-
     # ── PSA Exports ──
     layout_columns(
       col_widths = c(12),
@@ -110,19 +75,16 @@ mod_report_ui <- function(id) {
             col_widths = c(4, 4, 4),
             downloadButton(ns("dl_psa_excel"), "PSA Results (.xlsx)",
                           class = "btn-outline-warning btn-sm w-100"),
-            downloadButton(ns("dl_psa_scatter_png"), "CE Scatter",
+            downloadButton(ns("dl_psa_scatter_png"), "Cost vs TB Scatter",
                           class = "btn-outline-warning btn-sm w-100"),
-            downloadButton(ns("dl_ceac_png"), "CEAC Plot",
+            downloadButton(ns("dl_tb_density_png"), "TB Density Plot",
                           class = "btn-outline-warning btn-sm w-100")
-          ),
-          br(),
-          numericInput(ns("psa_wtp_export"), "WTP for PSA Exports (INR/QALY)",
-                      value = 234859, min = 0, max = 2000000, step = 50000)
+          )
         )
       )
     ),
 
-    # ── ICER Summary (Quick CSV) ──
+    # ── Quick CSV Exports ──
     layout_columns(
       col_widths = c(12),
       card(
@@ -130,12 +92,10 @@ mod_report_ui <- function(id) {
         card_body(
           tags$p("Download summary tables as CSV for easy import into other tools."),
           layout_columns(
-            col_widths = c(4, 4, 4),
-            downloadButton(ns("dl_icer_csv"), "ICER Table (.csv)",
-                          class = "btn-outline-secondary btn-sm w-100"),
+            col_widths = c(6, 6),
             downloadButton(ns("dl_dt_csv"), "Decision Tree (.csv)",
                           class = "btn-outline-secondary btn-sm w-100"),
-            downloadButton(ns("dl_summary_csv"), "Model Summary (.csv)",
+            downloadButton(ns("dl_summary_csv"), "CEA Summary (.csv)",
                           class = "btn-outline-secondary btn-sm w-100")
           )
         )
@@ -173,13 +133,11 @@ mod_report_server <- function(id, params_rv, model_results_rv, psa_results_rv, s
           if (input$include_plots) {
             tmp <- generate_full_report_with_plots(
               res, params_rv(), settings,
-              wtp = input$report_wtp,
               psa_results = psa_res
             )
           } else {
             tmp <- generate_cea_report(
               res, params_rv(), settings,
-              wtp = input$report_wtp,
               psa_results = psa_res
             )
           }
@@ -204,50 +162,6 @@ mod_report_server <- function(id, params_rv, model_results_rv, psa_results_rv, s
     )
 
     # ══════════════════════════════════════════════════════════════════
-    # Individual Plots (PNG)
-    # ══════════════════════════════════════════════════════════════════
-    output$dl_ceplane_png <- downloadHandler(
-      filename = function() "CE_Plane.png",
-      content = function(file) {
-        res <- model_results_rv()
-        if (is.null(res)) {
-          showNotification("No model results available.", type = "error")
-          return()
-        }
-        p <- build_ceplane_plot(res, input$plot_wtp)
-        ggsave(file, plot = p, width = 10, height = 7, dpi = 200)
-      }
-    )
-
-    output$dl_nmb_png <- downloadHandler(
-      filename = function() "NMB_Chart.png",
-      content = function(file) {
-        res <- model_results_rv()
-        if (is.null(res)) {
-          showNotification("No model results available.", type = "error")
-          return()
-        }
-        p <- build_nmb_plot(res)
-        ggsave(file, plot = p, width = 10, height = 7, dpi = 200)
-      }
-    )
-
-    output$dl_markov_png <- downloadHandler(
-      filename = function() paste0("Markov_Trace_", input$markov_strategy, ".png"),
-      content = function(file) {
-        res <- model_results_rv()
-        if (is.null(res)) {
-          showNotification("No model results available.", type = "error")
-          return()
-        }
-        p <- build_markov_trace_plot(res, input$markov_strategy, settings)
-        if (!is.null(p)) {
-          ggsave(file, plot = p, width = 10, height = 7, dpi = 200)
-        }
-      }
-    )
-
-    # ══════════════════════════════════════════════════════════════════
     # PSA Exports
     # ══════════════════════════════════════════════════════════════════
     output$dl_psa_excel <- downloadHandler(
@@ -260,35 +174,35 @@ mod_report_server <- function(id, params_rv, model_results_rv, psa_results_rv, s
           showNotification("PSA has not been run yet. Go to the PSA tab first.", type = "warning")
           return()
         }
-        tmp <- generate_psa_excel(psa_res, input$psa_wtp_export)
+        tmp <- generate_psa_excel(psa_res)
         file.copy(tmp, file)
       }
     )
 
     output$dl_psa_scatter_png <- downloadHandler(
-      filename = function() "PSA_CE_Scatter.png",
+      filename = function() "PSA_Cost_TB_Scatter.png",
       content = function(file) {
         psa_res <- tryCatch(psa_results_rv(), error = function(e) NULL)
         if (is.null(psa_res) || psa_res$n_valid == 0) {
           showNotification("PSA has not been run yet.", type = "warning")
           return()
         }
-        p <- build_psa_scatter_plot(psa_res, input$psa_wtp_export)
+        p <- build_psa_scatter_plot(psa_res)
         if (!is.null(p)) {
           ggsave(file, plot = p, width = 10, height = 7, dpi = 200)
         }
       }
     )
 
-    output$dl_ceac_png <- downloadHandler(
-      filename = function() "CEAC.png",
+    output$dl_tb_density_png <- downloadHandler(
+      filename = function() "PSA_TB_Density.png",
       content = function(file) {
         psa_res <- tryCatch(psa_results_rv(), error = function(e) NULL)
         if (is.null(psa_res) || psa_res$n_valid == 0) {
           showNotification("PSA has not been run yet.", type = "warning")
           return()
         }
-        p <- build_ceac_plot(psa_res)
+        p <- build_psa_tb_density_plot(psa_res)
         if (!is.null(p)) {
           ggsave(file, plot = p, width = 10, height = 7, dpi = 200)
         }
@@ -298,30 +212,6 @@ mod_report_server <- function(id, params_rv, model_results_rv, psa_results_rv, s
     # ══════════════════════════════════════════════════════════════════
     # Quick CSV Exports
     # ══════════════════════════════════════════════════════════════════
-    output$dl_icer_csv <- downloadHandler(
-      filename = function() "ICER_Table.csv",
-      content = function(file) {
-        res <- model_results_rv()
-        if (is.null(res)) {
-          showNotification("No model results.", type = "error")
-          return()
-        }
-        icer_df <- calculate_icer(res$summary)
-        export <- icer_df %>%
-          dplyr::transmute(
-            Strategy = strategy_name,
-            Cost_Per_Person = round(cost_total_per_person, 2),
-            QALYs_Per_Person = round(qaly_per_person, 6),
-            TB_Cases_Per_1000 = round(tb_cases_per_1000, 3),
-            Incremental_Cost = round(inc_cost, 2),
-            Incremental_QALY = round(inc_qaly, 6),
-            ICER = round(icer, 2),
-            Status = status
-          )
-        write.csv(export, file, row.names = FALSE)
-      }
-    )
-
     output$dl_dt_csv <- downloadHandler(
       filename = function() "Decision_Tree_Results.csv",
       content = function(file) {
@@ -337,7 +227,7 @@ mod_report_server <- function(id, params_rv, model_results_rv, psa_results_rv, s
     )
 
     output$dl_summary_csv <- downloadHandler(
-      filename = function() "Model_Summary.csv",
+      filename = function() "CEA_Summary.csv",
       content = function(file) {
         res <- model_results_rv()
         if (is.null(res)) {

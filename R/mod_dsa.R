@@ -1,4 +1,4 @@
-# mod_dsa.R — Module 6: Deterministic Sensitivity Analysis
+# mod_dsa.R — Module: Deterministic Sensitivity Analysis (DT-Based)
 
 mod_dsa_ui <- function(id) {
   ns <- NS(id)
@@ -20,8 +20,13 @@ mod_dsa_ui <- function(id) {
           ),
           layout_columns(
             col_widths = c(6, 6),
-            numericInput(ns("n_owsa_wtp"), "WTP (INR/QALY)", value = 234859,
-                        min = 0, max = 2000000, step = 50000),
+            selectInput(ns("sel_owsa_outcome"), "Outcome Metric",
+              choices = c(
+                "Expected TB (5y) per 1000" = "expected_tb_5y",
+                "Screening Cost per Person" = "cost",
+                "LTBI Missed per 1000" = "ltbi_missed"
+              ),
+              selected = "expected_tb_5y"),
             actionButton(ns("btn_run_owsa"), "Run One-Way SA",
                         class = "btn-primary mt-4", width = "100%")
           ),
@@ -67,13 +72,9 @@ mod_dsa_ui <- function(id) {
         card_header("Threshold Analysis"),
         card_body(
           layout_columns(
-            col_widths = c(12),
-            selectInput(ns("sel_thresh_param"), "Parameter to Vary",
-              choices = NULL, selected = NULL)
-          ),
-          layout_columns(
             col_widths = c(6, 6),
-            numericInput(ns("n_thresh_wtp"), "WTP (INR/QALY)", value = 234859),
+            selectInput(ns("sel_thresh_param"), "Parameter to Vary",
+              choices = NULL, selected = NULL),
             actionButton(ns("btn_run_thresh"), "Find Threshold",
                         class = "btn-success mt-4", width = "100%")
           ),
@@ -91,14 +92,13 @@ mod_dsa_ui <- function(id) {
 mod_dsa_server <- function(id, params_rv, settings) {
   moduleServer(id, function(input, output, session) {
 
-    # Key parameters for DSA
+    # Key parameters for DSA (DT-relevant only, no Markov params)
     key_params <- c(
       "p_LTBI_RA_combined", "Se_TST_5mm_IS", "Sp_TST_5mm_BCG",
       "Se_IGRA_rheum", "Sp_IGRA_rheum", "Se_CyTb", "Sp_CyTb_BCG",
       "RR_adalimumab", "r_LTBI_react_natural", "OR_INH_alone",
       "p_hepatox_INH_TNFi", "c_TST", "c_IGRA", "c_CyTb", "c_INH_6mo",
-      "c_TB_total", "c_adalimumab_mo", "u_RA_controlled", "u_active_PTB",
-      "CFR_DS_TB", "p_treatment_success", "discount_rate"
+      "c_LFT_monitoring", "c_hepatox_mild", "c_hepatox_severe"
     )
 
     observe({
@@ -125,33 +125,39 @@ mod_dsa_server <- function(id, params_rv, settings) {
       res <- owsa_results()
       if (is.null(res) || nrow(res) == 0) return(plotly_empty())
 
-      td <- tornado_data(res, input$sel_owsa_ref, input$n_owsa_wtp)
+      outcome_var <- input$sel_owsa_outcome
+      td <- tornado_data(res, input$sel_owsa_ref, outcome = outcome_var)
       if (nrow(td) == 0) return(plotly_empty())
 
-      td <- td %>% head(15)  # Top 15
+      td <- td %>% head(15)
 
-      # Base NMB
+      # Base case value
       p_base <- get_param_values(params_rv())
-      base_model <- run_full_model(p_base, settings)
+      base_model <- run_dt_only_model(p_base, settings)
       ref_idx <- which(base_model$summary$strategy == input$sel_owsa_ref)
-      base_nmb <- base_model$summary$qaly_per_person[ref_idx] * input$n_owsa_wtp -
-                   base_model$summary$cost_total_per_person[ref_idx]
+      base_val <- base_model$summary[[outcome_var]][ref_idx]
 
       td <- td %>%
         mutate(
-          low_dev = nmb_at_low - base_nmb,
-          high_dev = nmb_at_high - base_nmb,
+          low_dev = value_at_low - base_val,
+          high_dev = value_at_high - base_val,
           param_label = factor(param_name, levels = rev(param_name))
         )
+
+      outcome_labels <- c(
+        expected_tb_5y = "Expected TB Cases/1000 (5y)",
+        cost = "Screening Cost/Person (INR)",
+        ltbi_missed = "LTBI Missed/1000"
+      )
 
       p <- ggplot(td) +
         geom_segment(aes(x = low_dev, xend = high_dev, y = param_label, yend = param_label),
                      linewidth = 8, color = "#4472C4", alpha = 0.7) +
         geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
-        scale_x_continuous(labels = function(x) paste0("\u20B9", scales::comma(x))) +
-        labs(x = paste0("Change in NMB vs Base Case (", input$sel_owsa_ref, ")"),
+        labs(x = paste0("Change in ", outcome_labels[outcome_var],
+                        " (vs Base Case, ", input$sel_owsa_ref, ")"),
              y = NULL,
-             title = "Tornado Diagram — One-Way Sensitivity Analysis") +
+             title = "Tornado Diagram") +
         theme_minimal(base_size = 11)
 
       ggplotly(p, tooltip = c("x", "y"))
@@ -161,7 +167,7 @@ mod_dsa_server <- function(id, params_rv, settings) {
     twsa_results <- eventReactive(input$btn_run_twsa, {
       withProgress(message = "Running two-way sensitivity analysis...", {
         run_twsa(params_rv(), input$sel_twsa_p1, input$sel_twsa_p2,
-                 input$sel_twsa_ref, settings$wtp_thresholds[2], settings, n_steps = 7)
+                 input$sel_twsa_ref, wtp = 0, settings, n_steps = 7)
       })
     })
 
@@ -173,8 +179,8 @@ mod_dsa_server <- function(id, params_rv, settings) {
         geom_tile(alpha = 0.8) +
         scale_fill_brewer(palette = "Set2") +
         labs(x = grid$param1_name[1], y = grid$param2_name[1],
-             fill = "Optimal Strategy",
-             title = "Two-Way SA: Optimal Strategy by Parameter Combination") +
+             fill = "Lowest TB Burden",
+             title = "Two-Way SA: Strategy with Lowest 5-Year TB Burden") +
         theme_minimal(base_size = 12)
 
       ggplotly(p, tooltip = c("x", "y", "fill"))
@@ -183,8 +189,7 @@ mod_dsa_server <- function(id, params_rv, settings) {
     # Threshold analysis
     thresh_result <- eventReactive(input$btn_run_thresh, {
       withProgress(message = "Finding threshold...", {
-        find_threshold(params_rv(), input$sel_thresh_param,
-                      input$n_thresh_wtp, settings)
+        find_threshold(params_rv(), input$sel_thresh_param, wtp = 0, settings)
       })
     })
 

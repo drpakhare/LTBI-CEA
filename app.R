@@ -57,44 +57,6 @@ app_ui <- page_navbar(
     mod_mcda_ui("mcda")
   ),
 
-  # ── Supplementary: Long-Term Model (Markov + ICER) ──
-  nav_menu(
-    title = "Supplementary",
-    icon = icon("layer-group"),
-
-    nav_panel(
-      title = "Long-Term Model",
-      icon = icon("chart-line"),
-      card(
-        card_body(
-          class = "bg-light",
-          p(icon("info-circle"), tags$strong(" Supplementary Analysis"),
-            " \u2014 The Markov model projects lifetime outcomes over 40 years.",
-            "However, long-term QALY differences are marginal (< 0.08 across strategies)",
-            "because biologic costs dominate and prophylaxis disutility counterbalances TB prevention.",
-            "The primary CEA tab and Decision Framework tab are recommended for decision-making.",
-            class = "text-muted mb-0")
-        )
-      ),
-      mod_markov_ui("markov")
-    ),
-
-    nav_panel(
-      title = "ICER / NMB",
-      icon = icon("balance-scale"),
-      card(
-        card_body(
-          class = "bg-light",
-          p(icon("info-circle"), tags$strong(" Supplementary"),
-            " \u2014 Lifetime ICER analysis based on the Markov model.",
-            "Presented for completeness; interpret with caution given marginal QALY differences.",
-            class = "text-muted mb-0")
-        )
-      ),
-      mod_cea_ui("cea")
-    )
-  ),
-
   # ── Tab 6: Sensitivity Analysis ──
   nav_menu(
     title = "Sensitivity",
@@ -143,13 +105,9 @@ app_ui <- page_navbar(
         p("Multi-criteria analysis with adjustable weights. When ICER cannot distinguish",
           "strategies, the decision should incorporate TB prevention priority, test availability,",
           "equity, and public health impact. Adjust weights to reflect your setting."),
-        h5("6. Supplementary: Long-Term Model & ICER"),
-        p("Markov model (40-year horizon) and lifetime ICER/NMB analysis.",
-          "Presented for completeness but shows marginal QALY differences (< 0.08).",
-          "Interpret with caution \u2014 assumes stable biologic use over 40 years."),
-        h5("7. Sensitivity Analysis"),
-        p("DSA: one-way and two-way deterministic sensitivity analysis.",
-          "PSA: Monte Carlo simulation with CEAC and EVPI."),
+        h5("6. Sensitivity Analysis"),
+        p("DSA: one-way and two-way deterministic sensitivity analysis on DT outcomes.",
+          "PSA: Monte Carlo simulation showing parameter uncertainty impact on TB burden and cost."),
         hr(),
         h5("Key Concepts"),
         tags$dl(
@@ -187,11 +145,11 @@ app_server <- function(input, output, session) {
   mod_overview_server("overview")
   mod_parameters_server("parameters", params_rv)
 
-  # Model results (reactive on parameter changes)
+  # Model results (reactive on parameter changes) — DT-only for speed
   model_results <- reactive({
     p <- get_param_values(params_rv())
     tryCatch(
-      run_full_model(p, MODEL_SETTINGS),
+      run_dt_only_model(p, MODEL_SETTINGS),
       error = function(e) {
         showNotification(paste("Model error:", e$message), type = "error")
         NULL
@@ -205,8 +163,6 @@ app_server <- function(input, output, session) {
   mod_decision_tree_server("dt", params_rv, MODEL_SETTINGS)
   mod_dt_cea_server("dt_cea", model_results, params_rv, MODEL_SETTINGS)
   mod_mcda_server("mcda", model_results, MODEL_SETTINGS)
-  mod_markov_server("markov", model_results, MODEL_SETTINGS)
-  mod_cea_server("cea", model_results, MODEL_SETTINGS)
   mod_dsa_server("dsa", params_rv, MODEL_SETTINGS)
   mod_psa_server("psa", params_rv, MODEL_SETTINGS, psa_results_rv)
   mod_report_server("report", params_rv, model_results, psa_results_rv, MODEL_SETTINGS)
