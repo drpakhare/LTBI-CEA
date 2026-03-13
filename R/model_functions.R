@@ -430,6 +430,79 @@ run_markov_single <- function(p, dt_row, settings) {
   )
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SHORT-TERM (DECISION TREE) COST-EFFECTIVENESS
+# ══════════════════════════════════════════════════════════════════════════════
+
+#' Compute short-term CEA metrics from decision tree outputs
+#' These are the PRIMARY analysis: no long-term projection needed.
+#' @param dt Decision tree results (from run_decision_tree)
+#' @param p Parameter vector
+#' @param settings MODEL_SETTINGS
+#' @return tibble with per-strategy short-term CEA metrics
+compute_dt_cea <- function(dt, p, settings) {
+  # Annual TB reactivation rate on biologics (from parameters)
+  r_react_bio <- p[["r_LTBI_react_natural"]] * p[["RR_adalimumab"]]
+  proph_eff <- p[["OR_INH_alone"]]
+
+  # Expected TB cases per 1000 over different horizons (no Markov needed)
+  # Using simple probability calculation: P(TB in t years) = 1 - exp(-rate * t)
+  horizons <- c(1, 2, 5)  # years
+  n_cohort <- settings$n_cohort
+
+  dt_cea <- dt %>%
+    mutate(
+      strategy_name = settings$strategy_names[match(strategy, settings$strategies)],
+
+      # Key screening performance metrics
+      ltbi_detected_per_1000 = p_true_positive * 1000,
+      ltbi_missed_per_1000 = p_false_negative * 1000,
+      unnecessarily_treated_per_1000 = p_false_positive * 1000,
+
+      # Cost per LTBI detected (among those correctly identified)
+      cost_per_ltbi_detected = ifelse(p_true_positive > 0,
+                                       cost_total_dt / p_true_positive, NA),
+
+      # Expected TB without any screening (all LTBI untreated)
+      # Annual rate on biologics
+      tb_risk_untreated_1y = 1 - exp(-r_react_bio * 1),
+      tb_risk_untreated_5y = 1 - exp(-r_react_bio * 5),
+
+      # TB risk for treated LTBI (prophylaxis reduces rate)
+      tb_risk_treated_1y = 1 - exp(-r_react_bio * proph_eff * 1),
+      tb_risk_treated_5y = 1 - exp(-r_react_bio * proph_eff * 5),
+
+      # Expected TB cases per 1000 at 5 years:
+      # Missed LTBI (FN) reactivate at full rate
+      # Detected LTBI (TP) reactivate at treated rate
+      # FP and TN: no LTBI, no TB risk from reactivation
+      expected_tb_5y_per_1000 = (p_false_negative * tb_risk_untreated_5y +
+                                  p_true_positive * tb_risk_treated_5y) * 1000,
+      expected_tb_1y_per_1000 = (p_false_negative * tb_risk_untreated_1y +
+                                  p_true_positive * tb_risk_treated_1y) * 1000,
+
+      # TB cases averted vs no-screening baseline
+      # No screening = all LTBI reactivate at untreated rate
+      tb_no_screening_5y = p[["p_LTBI_RA_combined"]] * tb_risk_untreated_5y * 1000,
+      tb_averted_5y_per_1000 = tb_no_screening_5y - expected_tb_5y_per_1000,
+
+      # Cost per TB case averted (vs no screening) over 5 years
+      cost_per_tb_averted = ifelse(tb_averted_5y_per_1000 > 0,
+                                    cost_total_dt / (tb_averted_5y_per_1000 / 1000), NA),
+
+      # NNS to detect one LTBI
+      nns_detect_ltbi = ifelse(p_true_positive > 0,
+                                1 / p_true_positive, NA),
+
+      # NNT to prevent one TB case (5-year horizon)
+      nnt_prevent_tb = ifelse(tb_averted_5y_per_1000 > 0,
+                               p_treated / (tb_averted_5y_per_1000 / 1000), NA)
+    )
+
+  dt_cea
+}
+
+
 #' Run full model (decision tree + Markov) for all strategies
 #' @param p Named parameter vector
 #' @param settings MODEL_SETTINGS list
@@ -456,8 +529,12 @@ run_full_model <- function(p, settings = MODEL_SETTINGS) {
     p_ltbi_missed = dt$p_ltbi_missed
   )
 
+  # Short-term CEA from decision tree (PRIMARY analysis)
+  dt_cea <- compute_dt_cea(dt, p, settings)
+
   list(
     dt_results = dt,
+    dt_cea = dt_cea,
     markov_results = markov,
     summary = summary_df
   )

@@ -3721,6 +3721,12 @@
     "R/mod_decision_tree.R": {
       "checksum": "3239c64ca066cda614eddaa19a259033"
     },
+    "R/mod_dt_cea.R": {
+      "checksum": "49552c23109c2dbd3084b8713e9a4d1e"
+    },
+    "R/mod_mcda.R": {
+      "checksum": "1007a1ecb787a1f8ba70425ef1afdb61"
+    },
     "R/mod_dsa.R": {
       "checksum": "4e982cd83595da63df0c2f9b708d19c4"
     },
