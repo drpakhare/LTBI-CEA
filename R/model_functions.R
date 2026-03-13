@@ -503,6 +503,36 @@ compute_dt_cea <- function(dt, p, settings) {
 }
 
 
+#' Run DT-only model (no Markov) — used for primary CEA and sensitivity analysis
+#' Much faster than full model; returns DT screening outcomes + short-term CEA
+#' @param p Named parameter vector
+#' @param settings MODEL_SETTINGS list
+#' @return list with dt_results, dt_cea, summary (DT-based)
+run_dt_only_model <- function(p, settings = MODEL_SETTINGS) {
+  dt <- run_decision_tree(p)
+  dt_cea <- compute_dt_cea(dt, p, settings)
+
+  summary_df <- tibble::tibble(
+    strategy = dt$strategy,
+    strategy_name = settings$strategy_names[match(dt$strategy, settings$strategies)],
+    cost_per_person = dt$cost_total_dt,
+    expected_tb_5y = dt_cea$expected_tb_5y_per_1000,
+    tb_averted_5y = dt_cea$tb_averted_5y_per_1000,
+    cost_per_tb_averted = dt_cea$cost_per_tb_averted,
+    ltbi_detected = dt_cea$ltbi_detected_per_1000,
+    ltbi_missed = dt_cea$ltbi_missed_per_1000,
+    unnecessarily_treated = dt_cea$unnecessarily_treated_per_1000,
+    nnt_prevent_tb = dt_cea$nnt_prevent_tb
+  )
+
+  list(
+    dt_results = dt,
+    dt_cea = dt_cea,
+    summary = summary_df
+  )
+}
+
+
 #' Run full model (decision tree + Markov) for all strategies
 #' @param p Named parameter vector
 #' @param settings MODEL_SETTINGS list
