@@ -17,20 +17,28 @@ mod_overview_ui <- function(id) {
             tags$tr(tags$td("Population"), tags$td("Adults with RA/SpA/PsA, biologic-naive, India")),
             tags$tr(tags$td("Interventions"), tags$td("5 screening/management strategies")),
             tags$tr(tags$td("Comparator"), tags$td("TST alone (reference)")),
-            tags$tr(tags$td("Outcomes"), tags$td("Cost/QALY, TB cases averted, NMB"))
+            tags$tr(tags$td("Outcomes"), tags$td("Cost per TB case averted, LTBI detection, NNT/NNS"))
           ),
           br(),
           h5("Model Structure"),
           tags$table(class = "table table-sm table-bordered",
             tags$tr(tags$th("Setting"), tags$th("Value")),
-            tags$tr(tags$td("Model type"), tags$td("Decision tree + Markov cohort")),
+            tags$tr(tags$td("Primary model"), tags$td("Decision tree")),
+            tags$tr(tags$td("TB projection"), tags$td("5-year expected TB from epidemiological reactivation rates")),
             tags$tr(tags$td("Perspective"), tags$td("Indian healthcare system")),
-            tags$tr(tags$td("Time horizon"), tags$td("40 years (lifetime)")),
-            tags$tr(tags$td("Cycle length"), tags$td("3 months")),
-            tags$tr(tags$td("Discount rate"), tags$td("3% (costs & outcomes)")),
-            tags$tr(tags$td("Cohort size"), tags$td("100,000")),
-            tags$tr(tags$td("WTP threshold"), tags$td("\u20B92,34,859/QALY (1\u00D7 GDP p.c.)"))
-          )
+            tags$tr(tags$td("Decision framework"), tags$td("Multi-criteria (MCDA) with adjustable weights")),
+            tags$tr(tags$td("Sensitivity analysis"), tags$td("DSA (tornado/threshold) + PSA (Monte Carlo)"))
+          ),
+          br(),
+          h5("Analytical Rationale"),
+          p(class = "text-muted",
+            "The primary analysis uses a decision tree model because LTBI screening is a ",
+            "short-term clinical decision. Long-term Markov modelling (40-year QALY projection) ",
+            "shows marginal differences across strategies (< 0.08 QALYs \u2248 27.5 days), ",
+            "making ICER unable to meaningfully distinguish strategies. Therefore, the decision ",
+            "is better informed by short-term TB prevention effectiveness, screening cost, ",
+            "test availability, equity, and public health impact \u2014 captured through the ",
+            "multi-criteria decision framework (MCDA).")
         )
       )
     ),
@@ -51,15 +59,6 @@ mod_overview_ui <- function(id) {
           DiagrammeR::grVizOutput(ns("dt_diagram"), height = "600px")
         )
       )
-    ),
-    layout_columns(
-      col_widths = c(12),
-      card(
-        card_header("Markov State Transition Diagram"),
-        card_body(
-          DiagrammeR::grVizOutput(ns("markov_diagram"), height = "600px")
-        )
-      )
     )
   )
 }
@@ -78,10 +77,6 @@ mod_overview_server <- function(id) {
 
     output$dt_diagram <- DiagrammeR::renderGrViz({
       decision_tree_diagram()
-    })
-
-    output$markov_diagram <- DiagrammeR::renderGrViz({
-      markov_state_diagram()
     })
   })
 }
