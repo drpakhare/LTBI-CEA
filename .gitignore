@@ -1,0 +1,22 @@
+# R project files
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*~
+
+# Docker (not needed for Connect Cloud)
+Dockerfile
+
+# Validation/dev files
+validation_report.txt
+install_packages.R
+tests/

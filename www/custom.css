@@ -1,0 +1,104 @@
+/* custom.css — LTBI CEA Shiny App */
+
+/* ── CRITICAL: Disable bslib fill/flex layout so cards scroll naturally ── */
+.bslib-page-fill, .html-fill-container, .html-fill-item {
+  height: auto !important;
+  min-height: 0 !important;
+  flex: none !important;
+  overflow: visible !important;
+}
+
+.tab-content, .tab-pane, .tab-pane.active {
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* Card styling */
+.card {
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  margin-bottom: 24px;
+  height: auto !important;
+  min-height: auto !important;
+  flex: none !important;
+  overflow: visible !important;
+}
+
+.card-body {
+  height: auto !important;
+  min-height: auto !important;
+  flex: none !important;
+  overflow: visible !important;
+}
+
+.card-header {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* Table styling */
+.dataTables_wrapper {
+  font-size: 13px;
+}
+
+table.dataTable thead th {
+  background-color: #2E5090;
+  color: white;
+  font-weight: 600;
+}
+
+table.dataTable tbody tr:hover {
+  background-color: #F0F4FA !important;
+}
+
+/* Slider styling */
+.irs--shiny .irs-bar {
+  background: #2E5090;
+}
+.irs--shiny .irs-handle {
+  border-color: #2E5090;
+}
+
+/* Button styling */
+.btn-primary {
+  background-color: #2E5090;
+  border-color: #2E5090;
+}
+.btn-primary:hover {
+  background-color: #1F3864;
+  border-color: #1F3864;
+}
+
+/* Navbar */
+.navbar {
+  padding: 0.5rem 1rem;
+}
+
+/* Print styles */
+@media print {
+  .navbar, .btn, .slider, input, select {
+    display: none !important;
+  }
+  .card {
+    break-inside: avoid;
+    box-shadow: none;
+    border: 1px solid #ddd;
+  }
+}
+
+/* Loading spinner override */
+.shiny-busy {
+  position: fixed;
+  z-index: 1000;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  background: linear-gradient(90deg, #2E5090, #70AD47, #ED7D31);
+  animation: progress 2s infinite;
+}
+
+@keyframes progress {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
